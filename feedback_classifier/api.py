@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import FeedbackSource
@@ -18,6 +19,15 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS middleware for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Initialize services
 ingester = FeedbackIngester()
 query_service = FeedbackQueryService()
@@ -26,15 +36,19 @@ query_service = FeedbackQueryService()
 # ========== Request/Response Models ==========
 
 
-class IngestRequest(BaseModel):
-    text: str
-    source: str = "nps"  # nps, zendesk, intercom, email, other
-    user_id: Optional[str] = None
+class UserProfileRequest(BaseModel):
+    user_id: str
     email: Optional[str] = None
     subscription_type: Optional[str] = None
     mrr: Optional[float] = None
     company_name: Optional[str] = None
     industry: Optional[str] = None
+
+
+class IngestRequest(BaseModel):
+    text: str
+    source: str = "nps"  # nps, zendesk, intercom, email, other
+    user_profile: Optional[UserProfileRequest] = None
     nps_score: Optional[int] = None
     ticket_id: Optional[str] = None
     ticket_priority: Optional[str] = None
@@ -109,14 +123,14 @@ def ingest_feedback(request: IngestRequest):
         from models import UserProfile
 
         user_profile = None
-        if request.user_id:
+        if request.user_profile:
             user_profile = UserProfile(
-                user_id=request.user_id,
-                email=request.email,
-                subscription_type=request.subscription_type,
-                mrr=request.mrr,
-                company_name=request.company_name,
-                industry=request.industry,
+                user_id=request.user_profile.user_id,
+                email=request.user_profile.email,
+                subscription_type=request.user_profile.subscription_type,
+                mrr=request.user_profile.mrr,
+                company_name=request.user_profile.company_name,
+                industry=request.user_profile.industry,
             )
 
         feedback = ingester.ingest_single(
