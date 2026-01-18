@@ -12,6 +12,7 @@ numpy>=1.24.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 pydantic>=2.5.0
+python-multipart>=0.0.6  # Required for file uploads and form data
 
 # Utilities
 python-dotenv>=1.0.0
