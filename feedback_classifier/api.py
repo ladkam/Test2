@@ -4,16 +4,18 @@ Run with: uvicorn api:app --reload
 """
 import csv
 import io
+import threading
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import FeedbackSource, UserProfile
 from ingestion import FeedbackIngester
 from query_service import FeedbackQueryService
+from job_manager import job_manager, JobStatus
 
 app = FastAPI(
     title="Feedback Classification API",
@@ -527,6 +529,217 @@ async def import_csv(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+# ========== Background Import with Progress ==========
+
+
+def process_csv_import_background(
+    job_id: str,
+    csv_content: str,
+    mapping: ColumnMapping,
+    skip_classification: bool,
+):
+    """Background task to process CSV import with progress tracking."""
+    job_manager.start_job(job_id)
+
+    try:
+        reader = csv.DictReader(io.StringIO(csv_content))
+        rows = list(reader)
+        total_rows = len(rows)
+
+        job_manager.update_progress(job_id, current=0, total=total_rows, message="Starting import...")
+
+        imported = []
+        errors = []
+
+        for i, row in enumerate(rows):
+            row_num = i + 2  # Account for header row
+
+            # Check if job was cancelled
+            job = job_manager.get_job(job_id)
+            if job and job.status == JobStatus.CANCELLED:
+                job_manager.update_progress(job_id, message="Import cancelled")
+                return
+
+            try:
+                # Get text (required)
+                text = row.get(mapping.text, "").strip()
+                if not text:
+                    errors.append({"row": row_num, "error": "Empty text field"})
+                    job_manager.update_progress(
+                        job_id,
+                        current=i + 1,
+                        errors=len(errors),
+                        message=f"Row {row_num}: Empty text, skipped"
+                    )
+                    continue
+
+                # Get source
+                source_str = mapping.default_source
+                if mapping.source and row.get(mapping.source):
+                    source_str = row.get(mapping.source).strip().lower()
+
+                try:
+                    source = FeedbackSource(source_str)
+                except ValueError:
+                    source = FeedbackSource.OTHER
+
+                # Get NPS score
+                nps_score = None
+                if mapping.nps_score and row.get(mapping.nps_score):
+                    try:
+                        nps_score = int(row.get(mapping.nps_score))
+                    except ValueError:
+                        pass
+
+                # Build user profile
+                user_profile = None
+                if mapping.user_id and row.get(mapping.user_id):
+                    user_profile = UserProfile(
+                        user_id=row.get(mapping.user_id, "").strip(),
+                        email=row.get(mapping.email, "").strip() if mapping.email else None,
+                        subscription_type=row.get(mapping.subscription_type, "").strip()
+                        if mapping.subscription_type else None,
+                        mrr=float(row.get(mapping.mrr))
+                        if mapping.mrr and row.get(mapping.mrr) else None,
+                        company_name=row.get(mapping.company_name, "").strip()
+                        if mapping.company_name else None,
+                        industry=row.get(mapping.industry, "").strip()
+                        if mapping.industry else None,
+                    )
+
+                # Get ticket info
+                ticket_id = row.get(mapping.ticket_id, "").strip() if mapping.ticket_id else None
+                ticket_priority = row.get(mapping.ticket_priority, "").strip() if mapping.ticket_priority else None
+
+                # Ingest
+                feedback = ingester.ingest_single(
+                    text=text,
+                    source=source,
+                    user_profile=user_profile,
+                    nps_score=nps_score,
+                    ticket_id=ticket_id,
+                    ticket_priority=ticket_priority,
+                    skip_classification=skip_classification,
+                )
+
+                imported.append({
+                    "row": row_num,
+                    "id": feedback.id,
+                    "classification": feedback.classification.to_dict() if feedback.classification else None,
+                })
+
+                job_manager.update_progress(
+                    job_id,
+                    current=i + 1,
+                    successful=len(imported),
+                    errors=len(errors),
+                    message=f"Processing row {i + 1}/{total_rows}"
+                )
+
+            except Exception as e:
+                errors.append({"row": row_num, "error": str(e)})
+                job_manager.update_progress(
+                    job_id,
+                    current=i + 1,
+                    errors=len(errors),
+                    message=f"Row {row_num}: Error - {str(e)[:50]}"
+                )
+
+        # Complete the job
+        result = {
+            "imported_count": len(imported),
+            "error_count": len(errors),
+            "imported": imported[:20],
+            "errors": errors[:20],
+        }
+        job_manager.complete_job(job_id, result)
+
+    except Exception as e:
+        job_manager.fail_job(job_id, str(e))
+
+
+@app.post("/csv/import-async")
+async def import_csv_async(
+    file: UploadFile = File(...),
+    mapping_json: str = Form(...),
+    skip_classification: bool = Form(False),
+):
+    """Start a background CSV import with progress tracking.
+
+    Returns a job ID that can be used to check progress.
+    """
+    import json
+
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    try:
+        mapping_dict = json.loads(mapping_json)
+        mapping = ColumnMapping(**mapping_dict)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid mapping: {str(e)}")
+
+    try:
+        contents = await file.read()
+        csv_content = contents.decode("utf-8")
+
+        # Count rows for progress tracking
+        reader = csv.DictReader(io.StringIO(csv_content))
+        total_rows = sum(1 for _ in reader)
+
+        # Create job
+        job = job_manager.create_job("csv_import")
+        job_manager.update_progress(job.id, total=total_rows, message="Queued for processing")
+
+        # Start background thread
+        thread = threading.Thread(
+            target=process_csv_import_background,
+            args=(job.id, csv_content, mapping, skip_classification),
+            daemon=True,
+        )
+        thread.start()
+
+        return {
+            "job_id": job.id,
+            "status": "started",
+            "total_rows": total_rows,
+            "message": "Import started in background. Poll /csv/import/{job_id}/status for progress.",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start import: {str(e)}")
+
+
+@app.get("/csv/import/{job_id}/status")
+def get_import_status(job_id: str):
+    """Get the status of a background CSV import."""
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return job.to_dict()
+
+
+@app.post("/csv/import/{job_id}/cancel")
+def cancel_import(job_id: str):
+    """Cancel a running CSV import."""
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job_manager.cancel_job(job_id):
+        return {"success": True, "message": "Import cancelled"}
+    else:
+        return {"success": False, "message": f"Cannot cancel job in {job.status.value} status"}
+
+
+@app.get("/jobs")
+def list_jobs(job_type: Optional[str] = None, limit: int = 10):
+    """List recent jobs."""
+    jobs = job_manager.list_jobs(job_type)[:limit]
+    return {"jobs": [j.to_dict() for j in jobs]}
 
 
 # ========== Settings Endpoints ==========
