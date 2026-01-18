@@ -541,6 +541,10 @@ def process_csv_import_background(
     skip_classification: bool,
 ):
     """Background task to process CSV import with progress tracking."""
+    # Create a fresh ingester for this thread (with its own DB connection)
+    from ingestion import FeedbackIngester
+    thread_ingester = FeedbackIngester()
+
     job_manager.start_job(job_id)
 
     try:
@@ -613,8 +617,8 @@ def process_csv_import_background(
                 ticket_id = row.get(mapping.ticket_id, "").strip() if mapping.ticket_id else None
                 ticket_priority = row.get(mapping.ticket_priority, "").strip() if mapping.ticket_priority else None
 
-                # Ingest
-                feedback = ingester.ingest_single(
+                # Ingest using thread-local ingester
+                feedback = thread_ingester.ingest_single(
                     text=text,
                     source=source,
                     user_profile=user_profile,
@@ -809,8 +813,8 @@ def update_settings(settings: SettingsUpdate):
         Config.GOOGLE_API_KEY = settings.google_api_key
         os.environ["GOOGLE_API_KEY"] = settings.google_api_key
         # Reconfigure the AI service
-        import google.generativeai as genai
-        genai.configure(api_key=settings.google_api_key)
+        from ai_service import AIService
+        AIService.reconfigure(settings.google_api_key)
         updated.append("google_api_key")
 
     if settings.embedding_model is not None:
@@ -843,23 +847,43 @@ def update_settings(settings: SettingsUpdate):
 @app.post("/settings/test-api-key")
 def test_api_key(api_key: str = Form(...)):
     """Test if an API key is valid."""
+    import httpx
+
+    # Strip any whitespace that might have been introduced
+    api_key = api_key.strip()
+
+    if not api_key:
+        return {"valid": False, "message": "API key is empty"}
+
+    # Test directly with the API to avoid any genai library state issues
     try:
-        import google.generativeai as genai
-
-        genai.configure(api_key=api_key)
-        # Try a simple operation to validate
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content("Say 'API key is valid' in 5 words or less.")
-
-        return {
-            "valid": True,
-            "message": "API key is valid",
-            "test_response": response.text[:100] if response.text else None,
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": "Say 'API key valid' in 3 words"}]}]
         }
+
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(url, json=payload)
+
+        if response.status_code == 200:
+            data = response.json()
+            text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            return {
+                "valid": True,
+                "message": "API key is valid",
+                "test_response": text[:100] if text else "Success",
+            }
+        else:
+            error_data = response.json()
+            error_msg = error_data.get("error", {}).get("message", response.text)
+            return {
+                "valid": False,
+                "message": f"API error: {error_msg}",
+            }
     except Exception as e:
         return {
             "valid": False,
-            "message": f"Invalid API key: {str(e)}",
+            "message": f"Connection error: {str(e)}",
         }
 
 

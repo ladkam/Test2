@@ -17,10 +17,23 @@ class AIService:
     """Service for embedding generation and feedback classification."""
 
     def __init__(self):
-        genai.configure(api_key=Config.GOOGLE_API_KEY)
         self.embedding_model = Config.EMBEDDING_MODEL
         self.classification_model = Config.CLASSIFICATION_MODEL
         self.embedding_dimensions = Config.EMBEDDING_DIMENSIONS
+        # Always configure with current key (needed for each thread)
+        self._configure()
+
+    def _configure(self):
+        """Configure genai with the current API key."""
+        if Config.GOOGLE_API_KEY:
+            genai.configure(api_key=Config.GOOGLE_API_KEY)
+
+    @classmethod
+    def reconfigure(cls, api_key: str):
+        """Reconfigure with a new API key (updates Config too)."""
+        if api_key:
+            Config.GOOGLE_API_KEY = api_key
+            genai.configure(api_key=api_key)
 
     def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding vector for text.
