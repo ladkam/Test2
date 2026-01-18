@@ -7,6 +7,17 @@ export default function Loading({ text = 'Loading...' }) {
   )
 }
 
+export function LoadingSpinner({ size = 'md' }) {
+  const sizeClasses = {
+    sm: 'h-6 w-6',
+    md: 'h-10 w-10',
+    lg: 'h-12 w-12',
+  }
+  return (
+    <div className={`animate-spin rounded-full border-b-2 border-indigo-600 ${sizeClasses[size]}`}></div>
+  )
+}
+
 export function LoadingOverlay({ text = 'Processing...' }) {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
