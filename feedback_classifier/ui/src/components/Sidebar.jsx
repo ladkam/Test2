@@ -16,6 +16,8 @@ const navItems = [
 ]
 
 export default function Sidebar({ currentPage, onNavigate }) {
+  const isSettingsActive = currentPage === 'settings'
+
   return (
     <div className="w-64 bg-gray-900 text-white flex flex-col">
       {/* Logo */}
@@ -50,12 +52,19 @@ export default function Sidebar({ currentPage, onNavigate }) {
         </ul>
       </nav>
 
-      {/* Footer */}
+      {/* Footer - Settings */}
       <div className="p-4 border-t border-gray-800">
-        <div className="flex items-center gap-3 px-4 py-2 text-gray-400 text-sm">
-          <Settings size={16} />
+        <button
+          onClick={() => onNavigate('settings')}
+          className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+            isSettingsActive
+              ? 'bg-indigo-600 text-white'
+              : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+          }`}
+        >
+          <Settings size={20} />
           <span>Settings</span>
-        </div>
+        </button>
       </div>
     </div>
   )

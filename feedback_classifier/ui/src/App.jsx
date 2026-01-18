@@ -5,6 +5,7 @@ import Search from './pages/Search'
 import Ask from './pages/Ask'
 import Alerts from './pages/Alerts'
 import Ingest from './pages/Ingest'
+import Settings from './pages/Settings'
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState('dashboard')
@@ -21,6 +22,8 @@ export default function App() {
         return <Alerts />
       case 'ingest':
         return <Ingest />
+      case 'settings':
+        return <Settings />
       default:
         return <Dashboard />
     }
