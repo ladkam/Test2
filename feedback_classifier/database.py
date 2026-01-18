@@ -6,6 +6,7 @@ Supports:
 """
 import json
 import sqlite3
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -69,17 +70,21 @@ class DatabaseBase(ABC):
 
 
 class SQLiteDatabase(DatabaseBase):
-    """SQLite implementation for local development."""
+    """SQLite implementation for local development.
+
+    Uses thread-local storage for connections to support multi-threaded access.
+    """
 
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.SQLITE_PATH
-        self.conn = None
+        self._local = threading.local()
 
     def _get_connection(self) -> sqlite3.Connection:
-        if self.conn is None:
-            self.conn = sqlite3.connect(self.db_path)
-            self.conn.row_factory = sqlite3.Row
-        return self.conn
+        """Get a thread-local database connection."""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = sqlite3.connect(self.db_path)
+            self._local.conn.row_factory = sqlite3.Row
+        return self._local.conn
 
     def initialize(self) -> None:
         """Create tables if they don't exist."""
@@ -454,10 +459,10 @@ class SQLiteDatabase(DatabaseBase):
         return [self._row_to_feedback(row) for row in rows]
 
     def close(self) -> None:
-        """Close the database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        """Close the database connection for the current thread."""
+        if hasattr(self._local, 'conn') and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
 
 
 # PostgreSQL implementation for production

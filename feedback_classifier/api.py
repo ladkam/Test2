@@ -541,6 +541,10 @@ def process_csv_import_background(
     skip_classification: bool,
 ):
     """Background task to process CSV import with progress tracking."""
+    # Create a fresh ingester for this thread (with its own DB connection)
+    from ingestion import FeedbackIngester
+    thread_ingester = FeedbackIngester()
+
     job_manager.start_job(job_id)
 
     try:
@@ -613,8 +617,8 @@ def process_csv_import_background(
                 ticket_id = row.get(mapping.ticket_id, "").strip() if mapping.ticket_id else None
                 ticket_priority = row.get(mapping.ticket_priority, "").strip() if mapping.ticket_priority else None
 
-                # Ingest
-                feedback = ingester.ingest_single(
+                # Ingest using thread-local ingester
+                feedback = thread_ingester.ingest_single(
                     text=text,
                     source=source,
                     user_profile=user_profile,
