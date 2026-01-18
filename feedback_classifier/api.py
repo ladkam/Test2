@@ -2,14 +2,16 @@
 
 Run with: uvicorn api:app --reload
 """
+import csv
+import io
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from models import FeedbackSource
+from models import FeedbackSource, UserProfile
 from ingestion import FeedbackIngester
 from query_service import FeedbackQueryService
 
@@ -334,6 +336,318 @@ def reclassify_all(batch_size: int = 100):
 def get_statistics(days_back: int = 30):
     """Get summary statistics for feedback."""
     return query_service.get_statistics(days_back)
+
+
+# ========== CSV Upload Endpoints ==========
+
+
+@app.post("/csv/preview")
+async def preview_csv(file: UploadFile = File(...)):
+    """Preview CSV file and return columns and sample rows.
+
+    Use this to get column names for mapping before import.
+    """
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    try:
+        contents = await file.read()
+        decoded = contents.decode("utf-8")
+        reader = csv.DictReader(io.StringIO(decoded))
+
+        columns = reader.fieldnames or []
+        sample_rows = []
+        for i, row in enumerate(reader):
+            if i >= 5:  # Return first 5 rows as preview
+                break
+            sample_rows.append(row)
+
+        # Count total rows
+        reader = csv.DictReader(io.StringIO(decoded))
+        total_rows = sum(1 for _ in reader)
+
+        return {
+            "filename": file.filename,
+            "columns": columns,
+            "sample_rows": sample_rows,
+            "total_rows": total_rows,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+
+
+class ColumnMapping(BaseModel):
+    """Mapping of CSV columns to feedback fields."""
+
+    text: str  # Required: column containing feedback text
+    source: Optional[str] = None  # Column for source, or use default
+    default_source: str = "nps"  # Default source if not mapped
+    nps_score: Optional[str] = None
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    subscription_type: Optional[str] = None
+    mrr: Optional[str] = None
+    company_name: Optional[str] = None
+    industry: Optional[str] = None
+    ticket_id: Optional[str] = None
+    ticket_priority: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class CSVImportRequest(BaseModel):
+    """Request for CSV import with column mapping."""
+
+    csv_data: str  # Base64 or raw CSV content
+    mapping: ColumnMapping
+    skip_classification: bool = False
+
+
+@app.post("/csv/import")
+async def import_csv(
+    file: UploadFile = File(...),
+    mapping_json: str = Form(...),
+    skip_classification: bool = Form(False),
+):
+    """Import feedback from CSV with column mapping.
+
+    Expected form data:
+    - file: The CSV file
+    - mapping_json: JSON string of ColumnMapping
+    - skip_classification: Optional, skip AI classification for speed
+    """
+    import json
+
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    try:
+        mapping_dict = json.loads(mapping_json)
+        mapping = ColumnMapping(**mapping_dict)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid mapping: {str(e)}")
+
+    try:
+        contents = await file.read()
+        decoded = contents.decode("utf-8")
+        reader = csv.DictReader(io.StringIO(decoded))
+
+        imported = []
+        errors = []
+
+        for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is row 1)
+            try:
+                # Get text (required)
+                text = row.get(mapping.text, "").strip()
+                if not text:
+                    errors.append({"row": row_num, "error": "Empty text field"})
+                    continue
+
+                # Get source
+                source_str = mapping.default_source
+                if mapping.source and row.get(mapping.source):
+                    source_str = row.get(mapping.source).strip().lower()
+
+                # Validate source
+                try:
+                    source = FeedbackSource(source_str)
+                except ValueError:
+                    source = FeedbackSource.OTHER
+
+                # Get NPS score
+                nps_score = None
+                if mapping.nps_score and row.get(mapping.nps_score):
+                    try:
+                        nps_score = int(row.get(mapping.nps_score))
+                    except ValueError:
+                        pass
+
+                # Build user profile
+                user_profile = None
+                if mapping.user_id and row.get(mapping.user_id):
+                    user_profile = UserProfile(
+                        user_id=row.get(mapping.user_id, "").strip(),
+                        email=row.get(mapping.email, "").strip() if mapping.email else None,
+                        subscription_type=row.get(mapping.subscription_type, "").strip()
+                        if mapping.subscription_type
+                        else None,
+                        mrr=float(row.get(mapping.mrr))
+                        if mapping.mrr and row.get(mapping.mrr)
+                        else None,
+                        company_name=row.get(mapping.company_name, "").strip()
+                        if mapping.company_name
+                        else None,
+                        industry=row.get(mapping.industry, "").strip()
+                        if mapping.industry
+                        else None,
+                    )
+
+                # Get ticket info
+                ticket_id = (
+                    row.get(mapping.ticket_id, "").strip()
+                    if mapping.ticket_id
+                    else None
+                )
+                ticket_priority = (
+                    row.get(mapping.ticket_priority, "").strip()
+                    if mapping.ticket_priority
+                    else None
+                )
+
+                # Ingest
+                feedback = ingester.ingest_single(
+                    text=text,
+                    source=source,
+                    user_profile=user_profile,
+                    nps_score=nps_score,
+                    ticket_id=ticket_id,
+                    ticket_priority=ticket_priority,
+                    skip_classification=skip_classification,
+                )
+
+                imported.append(
+                    {
+                        "row": row_num,
+                        "id": feedback.id,
+                        "classification": feedback.classification.to_dict()
+                        if feedback.classification
+                        else None,
+                    }
+                )
+
+            except Exception as e:
+                errors.append({"row": row_num, "error": str(e)})
+
+        return {
+            "success": True,
+            "imported_count": len(imported),
+            "error_count": len(errors),
+            "imported": imported[:10],  # Return first 10 for preview
+            "errors": errors[:10],  # Return first 10 errors
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+# ========== Settings Endpoints ==========
+
+
+class SettingsUpdate(BaseModel):
+    """Settings update request."""
+
+    google_api_key: Optional[str] = None
+    embedding_model: Optional[str] = None
+    classification_model: Optional[str] = None
+    embedding_dimensions: Optional[int] = None
+
+
+# Available models
+AVAILABLE_MODELS = {
+    "embedding": [
+        {"id": "gemini-embedding-001", "name": "Gemini Embedding 001 (Recommended)", "dimensions": [768, 1536, 3072]},
+        {"id": "text-embedding-004", "name": "Text Embedding 004 (Legacy)", "dimensions": [768]},
+    ],
+    "classification": [
+        {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash (Recommended)"},
+        {"id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash Lite (Fastest)"},
+        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro (Best Quality)"},
+        {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash"},
+    ],
+}
+
+
+@app.get("/settings")
+def get_settings():
+    """Get current settings (API key is masked)."""
+    from config import Config
+
+    api_key = Config.GOOGLE_API_KEY or ""
+    masked_key = ""
+    if api_key:
+        # Show first 4 and last 4 characters
+        if len(api_key) > 8:
+            masked_key = api_key[:4] + "*" * (len(api_key) - 8) + api_key[-4:]
+        else:
+            masked_key = "*" * len(api_key)
+
+    return {
+        "google_api_key": masked_key,
+        "google_api_key_set": bool(Config.GOOGLE_API_KEY),
+        "embedding_model": Config.EMBEDDING_MODEL,
+        "classification_model": Config.CLASSIFICATION_MODEL,
+        "embedding_dimensions": Config.EMBEDDING_DIMENSIONS,
+        "available_models": AVAILABLE_MODELS,
+    }
+
+
+@app.post("/settings")
+def update_settings(settings: SettingsUpdate):
+    """Update settings.
+
+    Note: This updates the runtime config. For persistence,
+    update the .env file or environment variables.
+    """
+    from config import Config
+    import os
+
+    updated = []
+
+    if settings.google_api_key is not None:
+        Config.GOOGLE_API_KEY = settings.google_api_key
+        os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+        # Reconfigure the AI service
+        import google.generativeai as genai
+        genai.configure(api_key=settings.google_api_key)
+        updated.append("google_api_key")
+
+    if settings.embedding_model is not None:
+        Config.EMBEDDING_MODEL = settings.embedding_model
+        os.environ["EMBEDDING_MODEL"] = settings.embedding_model
+        updated.append("embedding_model")
+
+    if settings.classification_model is not None:
+        Config.CLASSIFICATION_MODEL = settings.classification_model
+        os.environ["CLASSIFICATION_MODEL"] = settings.classification_model
+        updated.append("classification_model")
+
+    if settings.embedding_dimensions is not None:
+        Config.EMBEDDING_DIMENSIONS = settings.embedding_dimensions
+        os.environ["EMBEDDING_DIMENSIONS"] = str(settings.embedding_dimensions)
+        updated.append("embedding_dimensions")
+
+    # Reinitialize services with new config
+    global ingester, query_service
+    ingester = FeedbackIngester()
+    query_service = FeedbackQueryService()
+
+    return {
+        "success": True,
+        "updated": updated,
+        "message": f"Updated {len(updated)} setting(s). Note: For persistence, update .env file.",
+    }
+
+
+@app.post("/settings/test-api-key")
+def test_api_key(api_key: str = Form(...)):
+    """Test if an API key is valid."""
+    try:
+        import google.generativeai as genai
+
+        genai.configure(api_key=api_key)
+        # Try a simple operation to validate
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content("Say 'API key is valid' in 5 words or less.")
+
+        return {
+            "valid": True,
+            "message": "API key is valid",
+            "test_response": response.text[:100] if response.text else None,
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "message": f"Invalid API key: {str(e)}",
+        }
 
 
 # Health check
