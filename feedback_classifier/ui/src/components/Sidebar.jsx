@@ -4,6 +4,7 @@ import {
   MessageSquareText,
   AlertTriangle,
   Upload,
+  BarChart3,
   Settings,
 } from 'lucide-react'
 
@@ -12,6 +13,7 @@ const navItems = [
   { id: 'search', label: 'Search', icon: Search },
   { id: 'ask', label: 'Ask AI', icon: MessageSquareText },
   { id: 'alerts', label: 'Alerts', icon: AlertTriangle },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'ingest', label: 'Import', icon: Upload },
 ]
 
