@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Upload,
   FileSpreadsheet,
@@ -8,6 +8,7 @@ import {
   X,
   ChevronDown,
   ChevronUp,
+  StopCircle,
 } from 'lucide-react'
 import { LoadingOverlay } from './Loading'
 
@@ -42,6 +43,20 @@ export default function CSVUpload({ onComplete }) {
   const [loading, setLoading] = useState(false)
   const [showPreview, setShowPreview] = useState(true)
   const fileInputRef = useRef(null)
+
+  // Progress tracking
+  const [jobId, setJobId] = useState(null)
+  const [progress, setProgress] = useState(null)
+  const pollIntervalRef = useRef(null)
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current)
+      }
+    }
+  }, [])
 
   const handleFileSelect = async (e) => {
     const selectedFile = e.target.files?.[0]
@@ -103,12 +118,48 @@ export default function CSVUpload({ onComplete }) {
 
   const canImport = mapping.text // text is required
 
+  const pollProgress = async (id) => {
+    try {
+      const response = await fetch(`${API_BASE}/csv/import/${id}/status`)
+      if (!response.ok) {
+        throw new Error('Failed to get status')
+      }
+
+      const data = await response.json()
+      setProgress(data.progress)
+
+      // Check if completed or failed
+      if (data.status === 'completed') {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+        setResult(data.result)
+        setStep('done')
+        if (onComplete) {
+          onComplete(data.result)
+        }
+      } else if (data.status === 'failed') {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+        setError(data.error || 'Import failed')
+        setStep('map')
+      } else if (data.status === 'cancelled') {
+        clearInterval(pollIntervalRef.current)
+        pollIntervalRef.current = null
+        setError('Import was cancelled')
+        setStep('map')
+      }
+    } catch (err) {
+      console.error('Polling error:', err)
+    }
+  }
+
   const handleImport = async () => {
     if (!canImport || !file) return
 
     setLoading(true)
     setStep('importing')
     setError(null)
+    setProgress(null)
 
     try {
       const formData = new FormData()
@@ -122,7 +173,8 @@ export default function CSVUpload({ onComplete }) {
       )
       formData.append('skip_classification', skipClassification.toString())
 
-      const response = await fetch(`${API_BASE}/csv/import`, {
+      // Use async endpoint with progress tracking
+      const response = await fetch(`${API_BASE}/csv/import-async`, {
         method: 'POST',
         body: formData,
       })
@@ -133,12 +185,12 @@ export default function CSVUpload({ onComplete }) {
       }
 
       const data = await response.json()
-      setResult(data)
-      setStep('done')
+      setJobId(data.job_id)
 
-      if (onComplete) {
-        onComplete(data)
-      }
+      // Start polling for progress
+      setProgress({ current: 0, total: data.total_rows, percentage: 0, message: 'Starting...' })
+      pollIntervalRef.current = setInterval(() => pollProgress(data.job_id), 1000)
+
     } catch (err) {
       setError(err.message || 'Import failed')
       setStep('map')
@@ -147,13 +199,38 @@ export default function CSVUpload({ onComplete }) {
     }
   }
 
+  const handleCancel = async () => {
+    if (jobId) {
+      try {
+        await fetch(`${API_BASE}/csv/import/${jobId}/cancel`, { method: 'POST' })
+      } catch (err) {
+        console.error('Cancel error:', err)
+      }
+    }
+
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+
+    setStep('map')
+    setJobId(null)
+    setProgress(null)
+  }
+
   const reset = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
     setStep('upload')
     setFile(null)
     setPreview(null)
     setMapping({})
     setResult(null)
     setError(null)
+    setJobId(null)
+    setProgress(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -367,17 +444,67 @@ export default function CSVUpload({ onComplete }) {
     )
   }
 
-  // Step 3: Importing
+  // Step 3: Importing with Progress
   if (step === 'importing') {
+    const percentage = progress?.percentage || 0
+    const current = progress?.current || 0
+    const total = progress?.total || preview?.total_rows || 0
+    const successful = progress?.successful || 0
+    const errors = progress?.errors || 0
+    const message = progress?.message || 'Starting...'
+
     return (
-      <div className="card p-12 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-        <p className="text-lg font-medium text-gray-700">Importing feedback...</p>
-        <p className="text-sm text-gray-500 mt-2">
-          {skipClassification
-            ? 'Storing data without classification'
-            : 'Embedding and classifying each item'}
-        </p>
+      <div className="card p-8">
+        <div className="text-center mb-6">
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            Importing Feedback
+          </h3>
+          <p className="text-sm text-gray-500">
+            {skipClassification
+              ? 'Storing data without classification'
+              : 'Embedding and classifying each item'}
+          </p>
+        </div>
+
+        {/* Progress Bar */}
+        <div className="mb-6">
+          <div className="flex justify-between text-sm text-gray-600 mb-2">
+            <span>{current} / {total}</span>
+            <span>{percentage.toFixed(1)}%</span>
+          </div>
+          <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+              style={{ width: `${percentage}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="p-4 bg-green-50 rounded-lg text-center">
+            <p className="text-2xl font-bold text-green-600">{successful}</p>
+            <p className="text-sm text-green-700">Successful</p>
+          </div>
+          <div className="p-4 bg-red-50 rounded-lg text-center">
+            <p className="text-2xl font-bold text-red-600">{errors}</p>
+            <p className="text-sm text-red-700">Errors</p>
+          </div>
+        </div>
+
+        {/* Current Status */}
+        <div className="p-3 bg-gray-100 rounded-lg mb-6">
+          <p className="text-sm text-gray-600 text-center truncate">{message}</p>
+        </div>
+
+        {/* Cancel Button */}
+        <button
+          onClick={handleCancel}
+          className="btn btn-secondary w-full flex items-center justify-center gap-2"
+        >
+          <StopCircle size={18} />
+          Cancel Import
+        </button>
       </div>
     )
   }
@@ -408,7 +535,7 @@ export default function CSVUpload({ onComplete }) {
 
         {result.errors?.length > 0 && (
           <div className="mb-6">
-            <h4 className="font-medium text-gray-700 mb-2">Errors (first 10)</h4>
+            <h4 className="font-medium text-gray-700 mb-2">Errors (first 20)</h4>
             <div className="bg-red-50 rounded-lg p-3 text-sm max-h-40 overflow-y-auto">
               {result.errors.map((err, i) => (
                 <p key={i} className="text-red-700">
