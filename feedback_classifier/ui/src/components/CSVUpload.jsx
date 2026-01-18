@@ -11,6 +11,7 @@ import {
   StopCircle,
 } from 'lucide-react'
 import { LoadingOverlay } from './Loading'
+import { registerJob } from './JobTracker'
 
 const API_BASE = '/api'
 
@@ -187,6 +188,9 @@ export default function CSVUpload({ onComplete }) {
 
       const data = await response.json()
       setJobId(data.job_id)
+
+      // Register job for global tracking (persists across page navigation)
+      registerJob(data.job_id)
 
       // Start polling for progress
       setProgress({ current: 0, total: data.total_rows, percentage: 0, message: 'Starting...' })
