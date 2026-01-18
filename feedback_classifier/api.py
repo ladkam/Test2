@@ -37,6 +37,31 @@ ingester = FeedbackIngester()
 query_service = FeedbackQueryService()
 
 
+# ========== Helper Functions ==========
+
+
+def parse_date(date_str: str) -> Optional[datetime]:
+    """Parse a date string in various formats."""
+    formats = [
+        "%Y-%m-%d",           # 2024-01-15
+        "%Y-%m-%dT%H:%M:%S",  # 2024-01-15T10:30:00
+        "%Y-%m-%dT%H:%M:%SZ", # 2024-01-15T10:30:00Z
+        "%Y-%m-%d %H:%M:%S",  # 2024-01-15 10:30:00
+        "%m/%d/%Y",           # 01/15/2024
+        "%m/%d/%Y %H:%M:%S",  # 01/15/2024 10:30:00
+        "%d/%m/%Y",           # 15/01/2024
+        "%d-%m-%Y",           # 15-01-2024
+        "%B %d, %Y",          # January 15, 2024
+        "%b %d, %Y",          # Jan 15, 2024
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 # ========== Request/Response Models ==========
 
 
@@ -617,6 +642,13 @@ def process_csv_import_background(
                 ticket_id = row.get(mapping.ticket_id, "").strip() if mapping.ticket_id else None
                 ticket_priority = row.get(mapping.ticket_priority, "").strip() if mapping.ticket_priority else None
 
+                # Parse date
+                created_at = None
+                if mapping.created_at and row.get(mapping.created_at):
+                    date_str = row.get(mapping.created_at).strip()
+                    if date_str:
+                        created_at = parse_date(date_str)
+
                 # Ingest using thread-local ingester
                 feedback = thread_ingester.ingest_single(
                     text=text,
@@ -625,6 +657,7 @@ def process_csv_import_background(
                     nps_score=nps_score,
                     ticket_id=ticket_id,
                     ticket_priority=ticket_priority,
+                    created_at=created_at,
                     skip_classification=skip_classification,
                 )
 

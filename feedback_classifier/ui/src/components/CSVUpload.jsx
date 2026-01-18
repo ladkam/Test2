@@ -17,6 +17,7 @@ const API_BASE = '/api'
 // Available fields to map to
 const MAPPING_FIELDS = [
   { key: 'text', label: 'Feedback Text', required: true, description: 'The main feedback content' },
+  { key: 'created_at', label: 'Date', required: false, description: 'Feedback date (ISO format or common formats)' },
   { key: 'source', label: 'Source', required: false, description: 'nps, zendesk, intercom, email, other' },
   { key: 'nps_score', label: 'NPS Score', required: false, description: 'Score from 0-10' },
   { key: 'user_id', label: 'User ID', required: false, description: 'Unique user identifier' },
