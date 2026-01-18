@@ -758,17 +758,16 @@ class SettingsUpdate(BaseModel):
     embedding_dimensions: Optional[int] = None
 
 
-# Available models
+# Available models (as of Jan 2025)
 AVAILABLE_MODELS = {
     "embedding": [
-        {"id": "gemini-embedding-001", "name": "Gemini Embedding 001 (Recommended)", "dimensions": [768, 1536, 3072]},
-        {"id": "text-embedding-004", "name": "Text Embedding 004 (Legacy)", "dimensions": [768]},
+        {"id": "text-embedding-004", "name": "Text Embedding 004 (Recommended)", "dimensions": [768]},
     ],
     "classification": [
-        {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash (Recommended)"},
-        {"id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash Lite (Fastest)"},
-        {"id": "gemini-2.5-pro", "name": "Gemini 2.5 Pro (Best Quality)"},
-        {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash"},
+        {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash (Recommended)"},
+        {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite (Fastest)"},
+        {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash"},
+        {"id": "gemini-1.5-pro", "name": "Gemini 1.5 Pro (Best Quality)"},
     ],
 }
 

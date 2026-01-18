@@ -10,8 +10,8 @@ class Config:
     GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
     # Models (current as of Jan 2025)
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
-    CLASSIFICATION_MODEL = os.getenv("CLASSIFICATION_MODEL", "gemini-2.5-flash")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+    CLASSIFICATION_MODEL = os.getenv("CLASSIFICATION_MODEL", "gemini-2.0-flash")
 
     # Embedding dimensions (768, 1536, or 3072)
     EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "768"))
