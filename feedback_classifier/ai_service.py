@@ -16,28 +16,24 @@ from models import Classification, FeedbackItem, Intent, Sentiment, Urgency, Use
 class AIService:
     """Service for embedding generation and feedback classification."""
 
-    _configured = False
-
     def __init__(self):
         self.embedding_model = Config.EMBEDDING_MODEL
         self.classification_model = Config.CLASSIFICATION_MODEL
         self.embedding_dimensions = Config.EMBEDDING_DIMENSIONS
-        # Only configure if we have a valid key
-        self._ensure_configured()
+        # Always configure with current key (needed for each thread)
+        self._configure()
 
-    @classmethod
-    def _ensure_configured(cls):
-        """Configure genai only once and only with a valid key."""
-        if Config.GOOGLE_API_KEY and not cls._configured:
+    def _configure(self):
+        """Configure genai with the current API key."""
+        if Config.GOOGLE_API_KEY:
             genai.configure(api_key=Config.GOOGLE_API_KEY)
-            cls._configured = True
 
     @classmethod
     def reconfigure(cls, api_key: str):
-        """Reconfigure with a new API key."""
+        """Reconfigure with a new API key (updates Config too)."""
         if api_key:
+            Config.GOOGLE_API_KEY = api_key
             genai.configure(api_key=api_key)
-            cls._configured = True
 
     def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding vector for text.
