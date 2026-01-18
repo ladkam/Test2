@@ -9,6 +9,7 @@ import {
   EyeOff,
   RefreshCw,
   ExternalLink,
+  Trash2,
 } from 'lucide-react'
 import Loading from '../components/Loading'
 
@@ -19,6 +20,8 @@ export default function Settings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [message, setMessage] = useState(null)
 
   // Form state
@@ -118,6 +121,33 @@ export default function Settings() {
       setMessage({ type: 'error', text: 'Failed to test API key' })
     } finally {
       setTesting(false)
+    }
+  }
+
+  const handleClearDatabase = async () => {
+    setClearing(true)
+    setMessage(null)
+
+    try {
+      const response = await fetch(`${API_BASE}/database/clear?confirm=yes`, {
+        method: 'DELETE',
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        setMessage({
+          type: 'success',
+          text: `Database cleared: ${data.deleted.feedback} feedback items and ${data.deleted.user_profiles} user profiles deleted.`,
+        })
+        setShowClearConfirm(false)
+      } else {
+        setMessage({ type: 'error', text: data.detail || 'Failed to clear database' })
+      }
+    } catch (error) {
+      setMessage({ type: 'error', text: 'Failed to clear database' })
+    } finally {
+      setClearing(false)
     }
   }
 
@@ -328,6 +358,63 @@ export default function Settings() {
             'Save Settings'
           )}
         </button>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="mt-8 card p-6 border-red-200 bg-red-50">
+        <div className="flex items-center gap-3 mb-4">
+          <Trash2 size={20} className="text-red-600" />
+          <h2 className="text-lg font-semibold text-red-800">Danger Zone</h2>
+        </div>
+
+        <p className="text-sm text-red-700 mb-4">
+          These actions are destructive and cannot be undone.
+        </p>
+
+        {!showClearConfirm ? (
+          <button
+            onClick={() => setShowClearConfirm(true)}
+            className="px-4 py-2 bg-white border border-red-300 text-red-700 rounded-lg hover:bg-red-100 transition-colors"
+          >
+            Clear Database
+          </button>
+        ) : (
+          <div className="p-4 bg-white rounded-lg border border-red-300">
+            <p className="text-red-800 font-medium mb-3">
+              Are you sure you want to delete ALL feedback data?
+            </p>
+            <p className="text-sm text-red-600 mb-4">
+              This will permanently delete all feedback items and user profiles.
+              This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleClearDatabase}
+                disabled={clearing}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {clearing ? (
+                  <>
+                    <RefreshCw size={16} className="animate-spin" />
+                    Clearing...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={16} />
+                    Yes, Delete Everything
+                  </>
+                )}
+              </button>
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                disabled={clearing}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Info Box */}

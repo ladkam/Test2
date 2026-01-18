@@ -5,6 +5,7 @@ import Search from './pages/Search'
 import Ask from './pages/Ask'
 import Alerts from './pages/Alerts'
 import Ingest from './pages/Ingest'
+import Analytics from './pages/Analytics'
 import Settings from './pages/Settings'
 
 export default function App() {
@@ -22,6 +23,8 @@ export default function App() {
         return <Alerts />
       case 'ingest':
         return <Ingest />
+      case 'analytics':
+        return <Analytics />
       case 'settings':
         return <Settings />
       default:

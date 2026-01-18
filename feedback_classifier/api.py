@@ -120,6 +120,15 @@ class ReclassifyResponse(BaseModel):
     message: str
 
 
+class UpdateClassificationRequest(BaseModel):
+    """Request to manually update feedback classification."""
+    sentiment: str  # positive, neutral, negative
+    topics: list[str]
+    urgency: str  # low, medium, high
+    intent: str  # churn_risk, upsell_opportunity, support_needed, feature_advocacy, general_feedback
+    summary: Optional[str] = None
+
+
 # ========== Endpoints ==========
 
 
@@ -178,6 +187,64 @@ def ingest_feedback(request: IngestRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/feedback/{feedback_id}/classification")
+def update_classification(feedback_id: str, request: UpdateClassificationRequest):
+    """Manually update the classification for a feedback item.
+
+    This allows users to correct or override AI classifications.
+    """
+    from models import Classification, Sentiment, Urgency, Intent
+    from database import get_database
+
+    try:
+        db = get_database()
+
+        # Validate the feedback exists
+        feedback = db.get_feedback(feedback_id)
+        if not feedback:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+
+        # Create updated classification
+        classification = Classification(
+            sentiment=Sentiment(request.sentiment),
+            topics=request.topics,
+            urgency=Urgency(request.urgency),
+            intent=Intent(request.intent),
+            summary=request.summary or "",
+            confidence=1.0,  # Manual classification = 100% confidence
+        )
+
+        # Update in database
+        db.update_classification(feedback_id, classification)
+
+        return {
+            "success": True,
+            "id": feedback_id,
+            "classification": classification.to_dict(),
+            "message": "Classification updated successfully",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid value: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/feedback/{feedback_id}")
+def get_feedback(feedback_id: str):
+    """Get a single feedback item by ID."""
+    from database import get_database
+
+    db = get_database()
+    feedback = db.get_feedback(feedback_id)
+
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    return feedback.to_dict()
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -363,6 +430,152 @@ def reclassify_all(batch_size: int = 100):
 def get_statistics(days_back: int = 30):
     """Get summary statistics for feedback."""
     return query_service.get_statistics(days_back)
+
+
+@app.get("/analytics/volume")
+def get_feedback_volume(
+    grain: str = Query("day", description="Time grain: hour, day, week, month"),
+    days_back: int = Query(30, description="Number of days to look back"),
+    sources: Optional[str] = Query(None, description="Comma-separated sources"),
+    sentiments: Optional[str] = Query(None, description="Comma-separated sentiments"),
+    topics: Optional[str] = Query(None, description="Comma-separated topics"),
+    urgency: Optional[str] = Query(None, description="Comma-separated urgency levels"),
+    intents: Optional[str] = Query(None, description="Comma-separated intents"),
+    subscription_types: Optional[str] = Query(None, description="Comma-separated subscription types"),
+):
+    """Get feedback volume over time for charting.
+
+    Returns time series data grouped by the specified grain with optional filters.
+    """
+    from database import get_database
+    from datetime import timedelta
+    from collections import defaultdict
+
+    db = get_database()
+    conn = db._get_connection()
+
+    # Calculate start date
+    start_date = datetime.now() - timedelta(days=days_back)
+
+    # Build WHERE clause for filters
+    conditions = ["f.created_at >= ?"]
+    params = [start_date.isoformat()]
+
+    if sources:
+        source_list = sources.split(",")
+        placeholders = ",".join("?" * len(source_list))
+        conditions.append(f"f.source IN ({placeholders})")
+        params.extend(source_list)
+
+    if sentiments:
+        sentiment_list = sentiments.split(",")
+        placeholders = ",".join("?" * len(sentiment_list))
+        conditions.append(f"f.sentiment IN ({placeholders})")
+        params.extend(sentiment_list)
+
+    if topics:
+        topic_list = topics.split(",")
+        topic_conditions = []
+        for topic in topic_list:
+            topic_conditions.append("f.topics LIKE ?")
+            params.append(f'%"{topic}"%')
+        conditions.append(f"({' OR '.join(topic_conditions)})")
+
+    if urgency:
+        urgency_list = urgency.split(",")
+        placeholders = ",".join("?" * len(urgency_list))
+        conditions.append(f"f.urgency IN ({placeholders})")
+        params.extend(urgency_list)
+
+    if intents:
+        intent_list = intents.split(",")
+        placeholders = ",".join("?" * len(intent_list))
+        conditions.append(f"f.intent IN ({placeholders})")
+        params.extend(intent_list)
+
+    if subscription_types:
+        sub_list = subscription_types.split(",")
+        placeholders = ",".join("?" * len(sub_list))
+        conditions.append(f"u.subscription_type IN ({placeholders})")
+        params.extend(sub_list)
+
+    where_clause = " AND ".join(conditions)
+
+    # Determine date grouping based on grain
+    if grain == "hour":
+        date_format = "%Y-%m-%d %H:00"
+    elif grain == "week":
+        date_format = "%Y-W%W"
+    elif grain == "month":
+        date_format = "%Y-%m"
+    else:  # default to day
+        date_format = "%Y-%m-%d"
+
+    # Query to get volume over time
+    sql = f"""
+        SELECT
+            strftime('{date_format}', f.created_at) as period,
+            COUNT(*) as count,
+            f.sentiment,
+            f.source
+        FROM feedback f
+        LEFT JOIN user_profiles u ON f.user_id = u.user_id
+        WHERE {where_clause}
+        GROUP BY period, f.sentiment, f.source
+        ORDER BY period ASC
+    """
+
+    cursor = conn.execute(sql, params)
+    rows = cursor.fetchall()
+
+    # Aggregate data
+    volume_by_period = defaultdict(lambda: {
+        "total": 0,
+        "by_sentiment": defaultdict(int),
+        "by_source": defaultdict(int),
+    })
+
+    for row in rows:
+        period = row[0]
+        count = row[1]
+        sentiment = row[2] or "unknown"
+        source = row[3] or "unknown"
+
+        volume_by_period[period]["total"] += count
+        volume_by_period[period]["by_sentiment"][sentiment] += count
+        volume_by_period[period]["by_source"][source] += count
+
+    # Convert to list format for charting
+    result = []
+    for period, data in sorted(volume_by_period.items()):
+        result.append({
+            "period": period,
+            "total": data["total"],
+            "by_sentiment": dict(data["by_sentiment"]),
+            "by_source": dict(data["by_source"]),
+        })
+
+    # Get totals
+    total_count = sum(item["total"] for item in result)
+    sentiment_totals = defaultdict(int)
+    source_totals = defaultdict(int)
+
+    for item in result:
+        for sentiment, count in item["by_sentiment"].items():
+            sentiment_totals[sentiment] += count
+        for source, count in item["by_source"].items():
+            source_totals[source] += count
+
+    return {
+        "grain": grain,
+        "days_back": days_back,
+        "data": result,
+        "totals": {
+            "count": total_count,
+            "by_sentiment": dict(sentiment_totals),
+            "by_source": dict(source_totals),
+        },
+    }
 
 
 # ========== CSV Upload Endpoints ==========
@@ -923,3 +1136,43 @@ def test_api_key(api_key: str = Form(...)):
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+@app.delete("/database/clear")
+def clear_database(confirm: str = Query(..., description="Must be 'yes' to confirm")):
+    """Clear all feedback data from the database.
+
+    This is a destructive operation that cannot be undone.
+    Requires confirm=yes query parameter.
+    """
+    if confirm.lower() != "yes":
+        raise HTTPException(
+            status_code=400,
+            detail="Must pass confirm=yes to clear database"
+        )
+
+    from database import get_database
+
+    try:
+        db = get_database()
+        conn = db._get_connection()
+
+        # Get counts before clearing
+        feedback_count = conn.execute("SELECT COUNT(*) FROM feedback").fetchone()[0]
+        user_count = conn.execute("SELECT COUNT(*) FROM user_profiles").fetchone()[0]
+
+        # Clear tables
+        conn.execute("DELETE FROM feedback")
+        conn.execute("DELETE FROM user_profiles")
+        conn.commit()
+
+        return {
+            "success": True,
+            "message": "Database cleared successfully",
+            "deleted": {
+                "feedback": feedback_count,
+                "user_profiles": user_count,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
